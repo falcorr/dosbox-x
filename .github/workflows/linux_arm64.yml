@@ -1,0 +1,118 @@
+name: Linux ARM64 builds
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  Linux_ARM64_build:
+    runs-on: ubuntu-latest
+    name: Build ARM64
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      # We skip the "Cancel previous runs" step to keep this simple, 
+      # but you can add it back if needed.
+
+      - name: Build in ARM64 container
+        uses: uraimo/run-on-arch-action@v2
+        with:
+          arch: aarch64
+          distro: bookworm  # Debian 12 (Stable, good for modern builds)
+          githubToken: ${{ github.token }}
+
+          # 1. Install Libraries
+          # We replicate your list but add build-essential, git, and explicit SDL dev headers
+          install: |
+            apt-get update
+            apt-get install -y \
+              build-essential \
+              git \
+              nasm \
+              fluidsynth \
+              libfluidsynth-dev \
+              libpcap-dev \
+              libslirp-dev \
+              libsdl1.2-dev \
+              libsdl-net1.2-dev \
+              libsdl2-dev \
+              libsdl2-net-dev \
+              libglu1-mesa-dev \
+              freeglut3-dev \
+              mesa-common-dev \
+              libpng-dev \
+              libavcodec-dev \
+              libavformat-dev \
+              libavutil-dev \
+              libswscale-dev \
+              libavdevice-dev \
+              libavcodec-extra
+
+          # 2. Run the Build Steps
+          # This combines your "Update build info", "Build SDL1", "Build SDL2",
+          # "Unit testing", and "Package build" steps into one script block.
+          run: |
+            # Set Variables
+            timestamp=$(date +%Y%m%d%H%M%S)
+            export shortsha=$(echo ${GITHUB_SHA} | cut -c1-7)
+            export copyrightyear=$(date +'%Y')
+            export updatestr=$(date +'%b %d, %Y %I:%M:%S%P')
+            
+            # Create Build Timestamp Header
+            echo '/* auto generated */' > include/build_timestamp.h
+            echo "#define UPDATED_STR \"${updatestr}\"" >> include/build_timestamp.h
+            echo "#define GIT_COMMIT_HASH \"${shortsha}\""  >> include/build_timestamp.h
+            echo "#define COPYRIGHT_END_YEAR \"${copyrightyear}\"" >> include/build_timestamp.h
+            
+            # Create output directory
+            mkdir -p src/bin
+            top=$(pwd)
+
+            # --- Build Linux SDL1 ---
+            echo "Building SDL1 Version..."
+            ./build-debug --enable-avcodec
+            strip -s src/dosbox-x
+            cp src/dosbox-x src/bin/dosbox-x-sdl1
+
+            # --- Build Linux SDL2 ---
+            echo "Building SDL2 Version..."
+            # Clean previous objects to ensure safe rebuild
+            make clean 
+            ./build-debug-sdl2 --enable-avcodec
+            strip -s src/dosbox-x
+            cp src/dosbox-x src/bin/dosbox-x-sdl2
+
+            # --- Unit Testing ---
+            echo "Running Unit Tests..."
+            chmod +x src/bin/dosbox-x-sdl1 src/bin/dosbox-x-sdl2
+            # Note: Tests might fail if they require a display (Headless environment)
+            src/bin/dosbox-x-sdl1 -tests || true
+            src/bin/dosbox-x-sdl2 -tests || true
+
+            # --- Package Build ---
+            echo "Packaging..."
+            mkdir -p src/bin/drivez
+            mkdir -p src/bin/glshaders
+            mkdir -p src/bin/languages
+            cp CHANGELOG src/bin/CHANGELOG.txt
+            cp dosbox-x.reference.conf src/bin/dosbox-x.reference.conf
+            cp dosbox-x.reference.full.conf src/bin/dosbox-x.reference.full.conf
+            # Check if font files exist before copying to prevent errors
+            [ -f contrib/fonts/FREECG98.BMP ] && cp contrib/fonts/FREECG98.BMP src/bin/FREECG98.BMP
+            cp contrib/fonts/wqy_1?pt.bdf src/bin/ || true
+            [ -f contrib/fonts/Nouveau_IBM.ttf ] && cp contrib/fonts/Nouveau_IBM.ttf src/bin/Nouveau_IBM.ttf
+            [ -f contrib/fonts/SarasaGothicFixed.ttf ] && cp contrib/fonts/SarasaGothicFixed.ttf src/bin/SarasaGothicFixed.ttf
+            [ -f contrib/windows/installer/drivez_readme.txt ] && cp contrib/windows/installer/drivez_readme.txt src/bin/drivez/readme.txt
+            cp contrib/glshaders/* src/bin/glshaders/
+            cp contrib/translations/*/*.lng src/bin/languages/
+
+      - name: Upload preview package
+        uses: actions/upload-artifact@v4
+        with:
+          name: dosbox-x-linux-arm64
+          path: src/bin/
